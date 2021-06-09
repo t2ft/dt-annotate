@@ -14,7 +14,8 @@
 #include <QMessageLogger>
 #include <QDebug>
 #include <stdarg.h>
-
+#include <QCoreApplication>
+#include <QDateTime>
 
 Annotate::Annotate(bool beQuiet)
     : m_beQuiet(beQuiet)
@@ -22,18 +23,19 @@ Annotate::Annotate(bool beQuiet)
 {
     m_singleHandleParams << "arasan,soc-ctl-syscon";
     m_singleHandleParams << "audio-supply";
-    m_singleHandleParams << "assigned-clock-parents";
     m_singleHandleParams << "backlight";
     m_singleHandleParams << "bt656-supply";
     m_singleHandleParams << "charge-dev";
     m_singleHandleParams << "connect";
     m_singleHandleParams << "ddr_timing";
+    m_singleHandleParams << "devfreq";
     m_singleHandleParams << "devfreq-events";
     m_singleHandleParams << "extcon";
     m_singleHandleParams << "gpio1830-supply";
     m_singleHandleParams << "interrupt-parent";
     m_singleHandleParams << "iommus";
     m_singleHandleParams << "logo-memory-region";
+    m_singleHandleParams << "mali-supply";
     m_singleHandleParams << "memory-region";
     m_singleHandleParams << "mmc-pwrseq";
     m_singleHandleParams << "native-mode";
@@ -69,6 +71,8 @@ Annotate::Annotate(bool beQuiet)
     m_singleHandleParams << "vqmmc-supply";
     m_singleHandleParams << "vref-supply";
 
+    m_firstHandleParams << "assigned-clock-parents";
+    m_firstHandleParams << "cooling-device";
     m_firstHandleParams << "discharge-gpios";
     m_firstHandleParams << "ep-gpios";
     m_firstHandleParams << "gpio";
@@ -82,6 +86,7 @@ Annotate::Annotate(bool beQuiet)
     m_firstHandleParams << "pwms";
     m_firstHandleParams << "reset-gpios";
     m_firstHandleParams << "rockchip,gpios";
+    m_firstHandleParams << "snps,reset-gpio";
     m_firstHandleParams << "thermal-sensors";
     m_firstHandleParams << "typec0-enable-gpios";
     m_firstHandleParams << "vbus-5v-gpios";
@@ -270,6 +275,36 @@ const QString Annotate::gpioType(const QString &x)
     return(x);
 }
 
+const QString Annotate::hex2dec(const QString &x)
+{
+    QString s(x);
+    if (x.contains("0x")) {
+        s = QString::number(x.toUInt(nullptr, 0));
+    }
+    return s;
+}
+
+const QString Annotate::interruptController(const QString &x)
+{
+    if (x=="0x0") return "GIC_SPI";
+    if (x=="0x1") return "GIC_PPI";
+    return x;
+}
+
+const QString Annotate::irqType(const QString &x)
+{
+    uint n = x.toUInt(nullptr, 0);
+    switch(n) {
+    case 0: return "IRQ_TYPE_NONE";
+    case 1: return "IRQ_TYPE_EDGE_RISING";
+    case 2: return "IRQ_TYPE_EDGE_FALLING";
+    case 3: return "IRQ_TYPE_EDGE_BOTH";
+    case 4: return "IRQ_TYPE_LEVEL_HIGH";
+    case 8: return "IRQ_TYPE_LEVEL_LOW";
+    }
+    return(x);
+}
+
 bool Annotate::writeOutput(const QString &fnOut, ByteArrayList &tsIn, const StringHash &symbols, const StringHash &handles)
 {
     QFile f(fnOut);
@@ -279,14 +314,32 @@ bool Annotate::writeOutput(const QString &fnOut, ByteArrayList &tsIn, const Stri
     }
     QTextStream tsOut(&f);
     log("writing to \"%s\"\n", qPrintable(fnOut));
+    tsOut << "/*\n";
+    tsOut << " *  created by " << qApp->applicationName() << " V" << qApp->applicationVersion() << "\n";
+    tsOut << " *  " << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "\n";
+    tsOut << " */\n";
     QString path;
     int n = tsIn.size();
     for (int inx=0; inx < n; ++inx)  {
         QString l = tsIn[inx];
-        if (l.contains("phandle = <0x"))
-                continue;   // skip phandle lines
-        if (!adjustPath(&path, l)) {
+        if (l.contains("phandle = <0x")) {
+            // remove phandle lines from output file
+            continue;
+        }
+        if (adjustPath(&path, l)) {
+            // add symbol to path
+            if (!l.contains("}")) {
+                QString sym = symbols.value(path);
+                if (!sym.isEmpty()) {
+                    l.insert(l.lastIndexOf('\t')+1, sym + ": ");
+                }
+            }
+        } else {
             // no path adjustments, maybe we can adjust handles or values
+            if (path.contains("__symbols__")) {
+                // remove contents of "__symbols__" region
+                continue;
+            }
             QStringList sl = l.split("=");
             QString name = sl[0].trimmed();
             if (m_singleHandleParams.contains(name)) {
@@ -295,10 +348,21 @@ bool Annotate::writeOutput(const QString &fnOut, ByteArrayList &tsIn, const Stri
                 l.replace(h, handleToSymbol(h, handles, symbols));
             } else if (m_firstHandleParams.contains(name)) {
                 // only very first parameter is a phandle
-                QStringList h = getParameters(l).split(" ");
+                const QStringList h = getParameters(l).split(" ");
                 l = leftOfParameters(l) + "<" + handleToSymbol(h[0], handles, symbols);
-                h.removeFirst();
-                l += " " + h.join(" ") + ">;";
+                if (name.contains("gpio")) {
+                    l += " " + rkGPIO(h[1]);
+                    if (h.size() > 2) {
+                        l + " " + gpioType(h[2]);
+                    }
+                    l += ">;";
+                } else {
+                    // join all parameters after converting from hex to dec
+                    for (int i=1; i< h.size(); ++i) {
+                        l += " " + hex2dec(h[i]);
+                    }
+                    l += ">;";
+                }
             } else if (m_listHandleParams.contains(name)) {
                 // all parameters are phandles
                 QStringList h = getParameters(l).split(" ");
@@ -316,7 +380,7 @@ bool Annotate::writeOutput(const QString &fnOut, ByteArrayList &tsIn, const Stri
                         l += "<" + handleToSymbol(h[0], handles, symbols) + ">;";
                     } else {
                         for (int i=0; i<n; i+=2) {
-                            l += "<" + handleToSymbol(h[i], handles, symbols) + " " + h[i+1] + ">" + separator(i==n-2);
+                            l += "<" + handleToSymbol(h[i], handles, symbols) + " " + hex2dec(h[i+1]) + ">" + separator(i==n-2);
                         }
                     }
                 } else if (name == "rockchip,pins") {
@@ -327,7 +391,7 @@ bool Annotate::writeOutput(const QString &fnOut, ByteArrayList &tsIn, const Stri
                     if (n==0) {
                         l += " RK_FUNC_GPIO";
                     } else {
-                        l += QString(" RK_FUNC_ALT%1").arg(n);
+                        l += QString(" RK_FUNC_%1").arg(n);
                     }
                     l += " " + handleToSymbol(h[3], handles, symbols) + ">;";
                 } else if (name == "rockchip,power-ctrl") {
@@ -341,17 +405,44 @@ bool Annotate::writeOutput(const QString &fnOut, ByteArrayList &tsIn, const Stri
                     QStringList h = getParameters(l).split(" ");
                     int n = h.size();
                     l = leftOfParameters(l);
-                    if (n%5==0) {
-                        for (int i=0; i<n; i+=5) {
-                            l += "<" + handleToSymbol(h[i], handles, symbols) + " " + h[i+1] + " " + h[i+2] + " " + h[i+3] + " " + h[i+4] + ">" + separator(i==n-5);
-                        }
-                    } else if (n%4==0) {
+                    if (n%4==0) {
                         for (int i=0; i<n; i+=4) {
-                            l += "<" + handleToSymbol(h[i], handles, symbols) + " " + h[i+1] + " " + h[i+2] + " " + h[i+3] + ">" + separator(i==n-4);
+                            l += "<" + interruptController(h[i]) + " " + hex2dec(h[i+1]) + " " + irqType(h[i+2]) + " " + hex2dec(handleToSymbol(h[i+3], handles, symbols)) + ">" + separator(i==n-4);
                         }
                     } else {
                         for (int i=0; i<n; i+=2) {
-                            l += "<" + rkGPIO(h[i]) + " " + h[i+1] + ">" + separator(i==n-2);
+                            l += "<" + rkGPIO(h[i]) + " " + hex2dec(h[i+1]) + ">" + separator(i==n-2);
+                        }
+                    }
+                } else if (name == "interrupt-map") {
+                    QStringList h = getParameters(l).split(" ");
+                    int n = h.size();
+                    l = leftOfParameters(l);
+                    if (n%6==0) {
+                        for (int i=0; i<n; i+=6) {
+                            l += "<" + hex2dec(h[i]) + " " + hex2dec(h[i+1]) + " " + hex2dec(h[i+2]) + " " + hex2dec(h[i+3]) + " " + handleToSymbol(h[i+4], handles, symbols) + " " + hex2dec(h[i+5]) + ">" + separator(i==n-6);
+                        }
+                    } else {
+                        for (int i=0; i<n; i+=2) {
+                            l += "<" + rkGPIO(h[i]) + " " + hex2dec(h[i+1]) + ">" + separator(i==n-2);
+                        }
+                    }
+                } else {
+                    // convert regular parameters to decimal numbers
+                    if (sl.size()>1) {
+                        if (sl[1].trimmed().startsWith('"')) {
+                            // string parameters
+                            // nothing to do
+                            ;
+                        } else if (!name.contains("reg")) {
+                            // numeric parameter list
+                            const QStringList h = getParameters(l).split(" ");
+                            l = leftOfParameters(l) + "<";
+                            for (const auto& s : h) {
+                                l += hex2dec(s) + " ";
+                            }
+                            l.chop(1);
+                            l += ">;";
                         }
                     }
                 }

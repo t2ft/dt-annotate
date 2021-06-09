@@ -58,6 +58,9 @@ private:
     const QString separator(bool last) { return (last ? ";" : ", "); }
     const QString rkGPIO(const QString &x);
     const QString gpioType(const QString &x);
+    const QString hex2dec(const QString &x);
+    const QString interruptController(const QString &x);
+    const QString irqType(const QString &x);
 };
 
 #endif // ANNOTATE_H
