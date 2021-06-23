@@ -25,6 +25,7 @@ Annotate::Annotate(bool beQuiet)
     m_singleHandleParams << "audio-supply";
     m_singleHandleParams << "backlight";
     m_singleHandleParams << "bt656-supply";
+    m_singleHandleParams << "center-supply";
     m_singleHandleParams << "charge-dev";
     m_singleHandleParams << "connect";
     m_singleHandleParams << "ddr_timing";
