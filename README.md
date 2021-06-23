@@ -1,4 +1,4 @@
-#dt-annotate
+# dt-annotate
 
 A very simple auto-annotation tool for re-compiled device tree source files
 
